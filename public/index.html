@@ -159,7 +159,8 @@
                     $('#powerLevelMin').val() ? parseInt($('#powerLevelMin').val(), 10) : 0,
                     $('#powerLevelMax').val() ? parseInt($('#powerLevelMax').val(), 10) : 0
                 ],
-                sort: $('#sort').val().split(',')
+                sort: $('#sort').val().split(','),
+                recurringJob: $('#recurringJob').is(':checked') // Capture the state of the checkbox
             };
 
             console.log("Submitting form data:", JSON.stringify({formData}));
@@ -185,7 +186,7 @@
                 console.error('Error:', error);
                 alert('Failed to submit form. Please try again later.');
             });
-    }
+        }
 
     </script>
 </body>
