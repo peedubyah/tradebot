@@ -1,0 +1,8 @@
+{
+        "Barbarian": "barbarian",
+        "Druid": "druid",
+        "Necromancer": "necromancer",
+        "Rogue": "rogue",
+        "Sorcerer": "sorcerer",
+        "Non-Class Specific": "non-class specific"
+}
