@@ -7,6 +7,51 @@ const fs = require('fs');
 const moment = require('moment');
 const FormData = require('form-data');
 const { MongoClient } = require('mongodb');
+const cron = require('node-cron');
+
+const app = express();
+app.use(express.static('public'));
+app.use(express.json());
+
+class CronManager {
+    constructor() {
+        this.jobs = new Map();
+    }
+
+    addJob(id, schedule, taskFunction) {
+        if (this.jobs.has(id)) {
+            console.log(`Job ID ${id} is already running. Please stop it before adding a new one.`);
+            return;
+        }
+        const job = cron.schedule(schedule, taskFunction, { scheduled: false });
+        this.jobs.set(id, job);
+        job.start();
+        console.log(`Job ID ${id} added and started.`);
+    }
+
+    removeJob(id) {
+        if (this.jobs.has(id)) {
+            const job = this.jobs.get(id);
+            job.stop();
+            job.destroy();
+            this.jobs.delete(id);
+            console.log(`Job ID ${id} stopped and removed.`);
+        } else {
+            console.log(`Job ID ${id} not found.`);
+        }
+    }
+
+    updateJob(id, newSchedule, taskFunction) {
+        if (this.jobs.has(id)) {
+            const job = this.jobs.get(id);
+            job.stop();
+            job.destroy();
+            this.addJob(id, newSchedule, taskFunction);
+            console.log(`Job ID ${id} updated.`);
+        }
+    }
+}
+const cronManager = new CronManager();
 
 // MongoDB setup
 const client = new MongoClient(process.env.MONGODB_URI);
@@ -48,8 +93,6 @@ class QueryModel {
     }
 }
 
-const cron = require('node-cron');
-
 function scheduleRecurringJobs() {
     // Fetch only recurring queries
     db.collection('queries').find({ isRecurring: true }).toArray((err, queries) => {
@@ -59,14 +102,52 @@ function scheduleRecurringJobs() {
         }
 
         queries.forEach(query => {
-            // Set up cron jobs based on the recurringInterval
+            const jobId = `query-${query._id}`; // Unique ID for each job
             const cronExpression = convertIntervalToCron(query.recurringInterval);
-            cron.schedule(cronExpression, async () => {
-                const items = await fetchItems(query.itemType, query.affixes.map(affix => affix.id));
-                // Further processing...
-            });
+
+            // Check if job already exists, if so, update it, otherwise add new
+            if (cronManager.jobs.has(jobId)) {
+                cronManager.updateJob(jobId, cronExpression, () => executeQuery(query));
+            } else {
+                cronManager.addJob(jobId, cronExpression, () => executeQuery(query));
+            }
         });
     });
+}
+
+// Endpoint to add a new cron job
+app.post('/add-cron-job', async (req, res) => {
+    const { id, schedule, query } = req.body;
+    cronManager.addJob(id, schedule, () => executeQuery(query));
+    res.send({ message: `Cron job ${id} added and started.` });
+});
+
+// Endpoint to remove a cron job
+app.post('/remove-cron-job', (req, res) => {
+    const { id } = req.body;
+    cronManager.removeJob(id);
+    res.send({ message: `Cron job ${id} removed.` });
+});
+
+// Endpoint to update a cron job
+app.post('/update-cron-job', (req, res) => {
+    const { id, newSchedule } = req.body;
+    cronManager.updateJob(id, newSchedule);
+    res.send({ message: `Cron job ${id} updated.` });
+});
+
+// Endpoint to list all cron jobs
+app.get('/list-cron-jobs', (req, res) => {
+    const jobs = Array.from(cronManager.jobs).map(([id, job]) => {
+        console.log(`Job ID: ${id}, Schedule: ${job.nextDates().toString()}`); // Log each job
+        return { id: id, schedule: job.nextDates().toString() };
+    });
+    res.json(jobs);
+});
+
+function executeQuery(query) {
+    console.log(`Executing query for ${query.itemType}`);
+    // your fetchItems function or similar could be called here
 }
 
 function convertIntervalToCron(interval) {
@@ -79,10 +160,6 @@ function convertIntervalToCron(interval) {
             return '0 0 * * *'; // Default to daily if undefined
     }
 }
-
-const app = express();
-app.use(express.static('public'));
-app.use(express.json());
 
 app.post('/construct-url', async (req, res) => {
     try {
@@ -176,7 +253,6 @@ function constructApiUrl(itemType, affixIdentifiers) {
     const inputParam = encodeURIComponent(JSON.stringify(inputPayload));
     return `${baseUrl}?batch=1&input=${inputParam}`;
 }
-
 
 async function takeScreenshot(id) {
     const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });

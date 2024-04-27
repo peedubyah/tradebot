@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Cron Jobs</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+        ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        li {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #f4f4f4;
+            border-radius: 4px;
+        }
+        form {
+            margin-top: 20px;
+        }
+        input[type="text"], button {
+            padding: 10px;
+            margin-top: 5px;
+            margin-right: 5px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        button {
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Current Cron Jobs</h1>
+    <ul id="jobsList"></ul>
+    
+    <h2>Add Job</h2>
+    <form id="addJobForm">
+        <input type="text" id="jobId" name="jobId" placeholder="Enter Job ID" required>
+        <input type="text" id="jobSchedule" name="jobSchedule" placeholder="Enter Schedule (e.g., */5 * * * *)" required>
+        <button type="submit">Add Job</button>
+    </form>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Function to fetch and display jobs
+            function fetchJobs() {
+                fetch('/list-cron-jobs')
+                    .then(response => response.json())
+                    .then(jobs => {
+                        const list = document.getElementById('jobsList');
+                        list.innerHTML = ''; // Clear existing list
+                        if (jobs && jobs.length > 0) {
+                            jobs.forEach(job => {
+                                const item = document.createElement('li');
+                                item.textContent = `ID: ${job.id}, Schedule: ${job.schedule}`;
+                                list.appendChild(item);
+                            });
+                        } else {
+                            list.innerHTML = '<li>No jobs scheduled.</li>';
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Failed to load jobs:', error);
+                        document.getElementById('jobsList').innerHTML = '<li>Error loading jobs.</li>';
+                    });
+            }
+    
+            // Call fetchJobs to load jobs when the page is ready
+            fetchJobs();
+    
+            // Event listener for adding a new job
+            document.getElementById('addJobForm').addEventListener('submit', function(event) {
+                event.preventDefault();
+                const jobId = document.getElementById('jobId').value;
+                const jobSchedule = document.getElementById('jobSchedule').value;
+    
+                fetch('/add-cron-job', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id: jobId, schedule: jobSchedule })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Job added:', data);
+                    fetchJobs(); // Refresh the list of jobs after adding a new one
+                })
+                .catch(error => console.error('Error adding job:', error));
+            });
+        });
+    </script>
+    
+</body>
+</html>
