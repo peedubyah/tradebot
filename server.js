@@ -21,7 +21,6 @@ async function connectToMongoDB() {
         console.error("Could not connect to MongoDB:", error);
     }
 }
-
 class QueryModel {
     constructor(data) {
         this.discorduser = data.discorduser || null;
@@ -34,8 +33,10 @@ class QueryModel {
         this.affixes = data.affixes || [];
         this.limit = data.limit || 20;
         this.payloadUri = data.payloadUri || '';
-        this.lastRun = data.lastRun || null; // trace the last succcessful run
-        this.lastItemTimestamp = data.lastItemTimestamp || null; // Timestamp of the last item fetched
+        this.lastRun = data.lastRun || null;
+        this.lastItemTimestamp = data.lastItemTimestamp || null;
+        this.isRecurring = data.isRecurring || false; // New field to indicate if the query is recurring
+        this.recurringInterval = data.recurringInterval || 'daily'; // Example: 'daily', 'weekly', etc.
     }
 
     async save() {
@@ -44,6 +45,38 @@ class QueryModel {
         }
         const collection = db.collection('queries');
         return collection.insertOne(this);
+    }
+}
+
+const cron = require('node-cron');
+
+function scheduleRecurringJobs() {
+    // Fetch only recurring queries
+    db.collection('queries').find({ isRecurring: true }).toArray((err, queries) => {
+        if (err) {
+            console.error('Failed to fetch recurring queries:', err);
+            return;
+        }
+
+        queries.forEach(query => {
+            // Set up cron jobs based on the recurringInterval
+            const cronExpression = convertIntervalToCron(query.recurringInterval);
+            cron.schedule(cronExpression, async () => {
+                const items = await fetchItems(query.itemType, query.affixes.map(affix => affix.id));
+                // Further processing...
+            });
+        });
+    });
+}
+
+function convertIntervalToCron(interval) {
+    switch (interval) {
+        case 'daily':
+            return '0 0 * * *'; // Every day at midnight
+        case 'weekly':
+            return '0 0 * * 0'; // Every Sunday at midnight
+        default:
+            return '0 0 * * *'; // Default to daily if undefined
     }
 }
 
