@@ -18,7 +18,7 @@ class CronManager {
         this.jobs = new Map();
     }
 
-    addJob(id, schedule, taskFunction) {
+    addJob(id, schedule, taskFunction, queryDetails) {
         if (this.jobs.has(id)) {
             console.log(`Job ID ${id} is already running. Please stop it before adding a new one.`);
             return;
@@ -27,6 +27,9 @@ class CronManager {
         this.jobs.set(id, job);
         job.start();
         console.log(`Job ID ${id} added and started.`);
+
+        const collection = db.collection('cronJobs');
+        collection.updateOne({ jobId: id }, { $set: { schedule: schedule, details: queryDetails } }, { upsert: true });
     }
 
     removeJob(id) {
@@ -36,21 +39,20 @@ class CronManager {
             job.destroy();
             this.jobs.delete(id);
             console.log(`Job ID ${id} stopped and removed.`);
+
+            const collection = db.collection('cronJobs');
+            collection.deleteOne({ jobId: id });
         } else {
             console.log(`Job ID ${id} not found.`);
         }
     }
 
-    updateJob(id, newSchedule, taskFunction) {
-        if (this.jobs.has(id)) {
-            const job = this.jobs.get(id);
-            job.stop();
-            job.destroy();
-            this.addJob(id, newSchedule, taskFunction);
-            console.log(`Job ID ${id} updated.`);
-        }
+    updateJob(id, newSchedule, taskFunction, queryDetails) {
+        this.removeJob(id);
+        this.addJob(id, newSchedule, taskFunction, queryDetails);
     }
 }
+
 const cronManager = new CronManager();
 
 // MongoDB setup
@@ -60,12 +62,55 @@ let db;
 async function connectToMongoDB() {
     try {
         await client.connect();
-        db = client.db();
+        db = client.db("yourDatabase");
         console.log("Connected to MongoDB");
+        loadScheduledJobs();  // Ensure jobs are loaded after DB connection
     } catch (error) {
         console.error("Could not connect to MongoDB:", error);
     }
 }
+
+function loadScheduledJobs() {
+    const collection = db.collection('cronJobs');
+    collection.find({}).forEach(job => {
+        cronManager.addJob(job.jobId, job.schedule, () => executeQuery(job.details), job.details);
+    });
+}
+
+connectToMongoDB();
+
+function executeQuery(query) {
+    console.log(`Executing query for ${query.itemType}`);
+    // Your function to execute queries goes here
+}
+
+// Your express routes for handling API requests
+app.post('/add-cron-job', async (req, res) => {
+    const { id, schedule, query } = req.body;
+    cronManager.addJob(id, schedule, () => executeQuery(query), query);
+    res.send({ message: `Cron job ${id} added and started.` });
+});
+
+app.post('/remove-cron-job', (req, res) => {
+    const { id } = req.body;
+    cronManager.removeJob(id);
+    res.send({ message: `Cron job ${id} removed.` });
+});
+
+app.post('/update-cron-job', (req, res) => {
+    const { id, newSchedule, query } = req.body;
+    cronManager.updateJob(id, newSchedule, () => executeQuery(query), query);
+    res.send({ message: `Cron job ${id} updated.` });
+});
+
+app.get('/list-cron-jobs', (req, res) => {
+    const jobs = Array.from(cronManager.jobs).map(([id, job]) => ({
+        id: id,
+        schedule: job.nextDates().toString()
+    }));
+    res.json(jobs);
+});
+
 class QueryModel {
     constructor(data) {
         this.discorduser = data.discorduser || null;
@@ -213,10 +258,20 @@ async function fetchItems(itemType, affixIdentifiers) {
 
 function constructApiUrl(itemType, affixIdentifiers) {
     const baseUrl = 'https://diablo.trade/api/trpc/offer.search';
-    const effects = affixIdentifiers.map(id => ({
-        id: id,
-        value: { min: null, max: null }
-    }));
+    const effects = affixIdentifiers.map(id => {
+        // Prepare object conditionally based on your app's logic or input
+        const effect = { id: id };
+
+        // Optionally add min/max if available and valid
+        effect.value = {};
+        if (typeof someMinValue === 'number') effect.value.min = someMinValue; // Replace 'someMinValue' with actual logic to obtain value
+        if (typeof someMaxValue === 'number') effect.value.max = someMaxValue; // Replace 'someMaxValue' with actual logic to obtain value
+
+        // Remove value object if empty
+        if (Object.keys(effect.value).length === 0) delete effect.value;
+
+        return effect;
+    });
 
     const inputPayload = {
         "0": {
