@@ -1,4 +1,3 @@
-require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const puppeteer = require('puppeteer');
@@ -9,9 +8,47 @@ const FormData = require('form-data');
 const { MongoClient } = require('mongodb');
 const cron = require('node-cron');
 
+require('dotenv').config();
+
 const app = express();
 app.use(express.static('public'));
 app.use(express.json());
+
+const logFilePath = path.join(__dirname, 'server.log');
+
+function logToFile(message, data = null, isError = false) {
+    const timestamp = new Date().toISOString();
+    let logMessage = `${timestamp} - ${isError ? 'ERROR' : 'INFO'} - ${message}`;
+
+    if (data) {
+        const simpleData = {
+            statusCode: data.status || 'No status', // Use default if status is not available
+        };
+
+        // Check if data is available and has a data property before accessing length
+        if (data.data && typeof data.data === 'object') {
+            simpleData.contentLength = JSON.stringify(data.data).length; // Stringify if object to get length
+        } else if (typeof data.data === 'string') {
+            simpleData.contentLength = data.data.length; // Directly access length if string
+        } else {
+            simpleData.contentDetail = 'No detailed data available'; // Default message if data is not structured as expected
+        }
+
+        logMessage += ` - ${JSON.stringify(simpleData)}`;
+    }
+
+    // Append to the log file
+    fs.appendFile(logFilePath, logMessage + '\n', (err) => {
+        if (err) {
+            console.error('Failed to write to log file:', err);
+        }
+    });
+
+    // Additionally log errors to the console
+    if (isError) {
+        console.error(logMessage);
+    }
+}
 
 class CronManager {
     constructor() {
@@ -70,11 +107,20 @@ async function connectToMongoDB() {
     }
 }
 
-function loadScheduledJobs() {
-    const collection = db.collection('cronJobs');
-    collection.find({}).forEach(job => {
-        cronManager.addJob(job.jobId, job.schedule, () => executeQuery(job.details), job.details);
-    });
+async function loadScheduledJobs() {
+    try {
+        const collection = db.collection('cronJobs');
+        const jobs = await collection.find({}).toArray(); // Using toArray() with async/await
+        if (jobs.length === 0) {
+            console.log('No scheduled jobs found in database.');
+        }
+        jobs.forEach(job => {
+            console.log(`Loading job ID ${job.jobId} with schedule ${job.schedule}`);
+            cronManager.addJob(job.jobId, job.schedule, () => executeQuery(job.details), job.details);
+        });
+    } catch (error) {
+        console.error('Failed to load scheduled jobs:', error);
+    }
 }
 
 connectToMongoDB();
@@ -86,7 +132,7 @@ function executeQuery(query) {
 
 // Your express routes for handling API requests
 app.post('/add-cron-job', async (req, res) => {
-    const { id, schedule, query } = req.body;
+    const { id, schedule, query, } = req.body;
     cronManager.addJob(id, schedule, () => executeQuery(query), query);
     res.send({ message: `Cron job ${id} added and started.` });
 });
@@ -162,7 +208,7 @@ function scheduleRecurringJobs() {
 
 // Endpoint to add a new cron job
 app.post('/add-cron-job', async (req, res) => {
-    const { id, schedule, query } = req.body;
+    const { id, schedule, query } = req.body.formData;
     cronManager.addJob(id, schedule, () => executeQuery(query));
     res.send({ message: `Cron job ${id} added and started.` });
 });
@@ -208,46 +254,52 @@ function convertIntervalToCron(interval) {
 
 app.post('/construct-url', async (req, res) => {
     try {
-        const { itemType, effectsGroup, discordUserID } = req.body.formData; // Assuming formData is directly in the body
+        const { itemType, effectsGroup, discordUserID, recurringJob } = req.body.formData;
 
-        console.log("Discord User ID received:", discordUserID);  // Verify the ID is being received correctly
+        console.log("Discord User ID received:", discordUserID);
+        console.log("Recurring job:", recurringJob);
 
         const affixIdentifiers = effectsGroup.map(group => group.effectId);
         const items = await fetchItems(itemType, affixIdentifiers);
 
-        const batchSize = 10;
-        for (let i = 0; i < items.length; i += batchSize) {
-            const currentBatch = items.slice(i, i + batchSize);
+        const batchSize = 10;  // Define the number of embeds per batch
+        const embedsToSend = [];  // Initialize an array to hold embeds for batch sending
 
-        for (const item of currentBatch) {
-            const imagePath = await takeScreenshot(item._id);
+        for (const item of items) {
+            let imagePath = await takeScreenshot(item._id);
             if (!imagePath) {
-                console.error('Failed to capture screenshot for item ID:', item._id);
-                continue; // Skip this item if screenshot failed
+                console.error(`Failed to capture screenshot for item ID ${item._id}`);
+                continue;
             }
 
             const listingAge = Date.now() - new Date(item.updatedAt);
             const embed = constructEmbed(item, imagePath, listingAge);
+            embedsToSend.push(embed);
 
-            const message = {
-                content: discordUserID ? `<@${discordUserID}> Check out this new listing!` : "Check out this new listing!",  // Mention user if ID is provided
-                embeds: [embed],
-                files: [imagePath]
-            };
+            if (embedsToSend.length === batchSize || items.indexOf(item) === items.length - 1) {
+                await sendToDiscord({ content: `<@${discordUserID}> Check out these new listings!`, embeds: embedsToSend });
+                embedsToSend.length = 0; // Clear the array after sending
+            }
 
-            await sendToDiscord(message);
-            fs.unlinkSync(imagePath);  // Clean up the screenshot file after sending
+            fs.unlinkSync(imagePath); // Clean up the screenshot file
         }
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Send any remaining embeds
+        if (embedsToSend.length > 0) {
+            await sendToDiscord({ content: `<@${discordUserID}> Check out these new listings!`, embeds: embedsToSend });
         }
-        
+
+        if (recurringJob) {
+            console.log('Setting up recurring job...');
+        }
+
         res.json({ message: 'Processed all items successfully.' });
     } catch (error) {
         console.error('Failed to process items:', error);
         res.status(500).json({ error: error.message });
     }
 });
+
 
 
 async function fetchItems(itemType, affixIdentifiers) {
@@ -310,16 +362,30 @@ function constructApiUrl(itemType, affixIdentifiers) {
 }
 
 async function takeScreenshot(id) {
-    const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const page = await browser.newPage();
     const url = `https://diablo.trade/listings/items/${id}`;
-    await page.goto(url, { waitUntil: 'networkidle0' });
     const imagePath = path.join(__dirname, `${id}.png`);
-    const element = await page.$('.relative.mx-auto.h-fit.w-64.border-\\[20px\\].sm\\:w-72.sm\\:border-\\[24px\\].flip-card-face');
-    await element.screenshot({ path: imagePath });
-    await browser.close();
+    const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+
+    try {
+        const page = await browser.newPage();
+        await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 }); // Increased timeout to 60 seconds
+        const element = await page.$('.relative.mx-auto.h-fit.w-64.border-\\[20px\\].sm\\:w-72.sm\\:border-\\[24px\\].flip-card-face');
+
+        if (element) {
+            await element.screenshot({ path: imagePath });
+        } else {
+            throw new Error("Screenshot target element not found.");
+        }
+    } catch (error) {
+        console.error(`Failed to capture screenshot for item ID ${id}:`, error);
+        return null; // Return null to indicate a failure
+    } finally {
+        await browser.close();
+    }
+
     return imagePath;
 }
+
 
 function constructEmbed(item, imagePath, listingAge) {
     return {
@@ -337,28 +403,18 @@ function constructEmbed(item, imagePath, listingAge) {
     };
 }
 
-async function sendToDiscord({ content, embeds, files }) {
+async function sendToDiscord({ content, embeds }) {
     const formData = new FormData();
     formData.append('payload_json', JSON.stringify({ content, embeds }));
-
-    // Ensure 'files' is actually an array
-    if (Array.isArray(files)) {
-        files.forEach(file => {
-            formData.append('file', fs.createReadStream(file), { filename: path.basename(file) });
-        });
-    } else {
-        console.error('Expected files to be an array, but received:', files);
-        return; // Optionally return an error or throw here
-    }
 
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     try {
         const response = await axios.post(webhookUrl, formData, {
             headers: formData.getHeaders()
         });
-        console.log('Message sent successfully:', response.data);
+        logToFile('Messages sent successfully', response, false); // Log success with response data
     } catch (error) {
-        console.error('Failed to send message to Discord:', error);
+        logToFile('Failed to send messages to Discord', error, true); // Log error with error details
     }
 }
 

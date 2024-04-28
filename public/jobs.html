@@ -58,6 +58,7 @@
                 fetch('/list-cron-jobs')
                     .then(response => response.json())
                     .then(jobs => {
+                        console.log(jobs);
                         const list = document.getElementById('jobsList');
                         list.innerHTML = ''; // Clear existing list
                         if (jobs && jobs.length > 0) {
